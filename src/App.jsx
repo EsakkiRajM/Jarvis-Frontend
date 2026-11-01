@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 //import { checkHealth, sendMessage } from "../api.js";
 import "./App.css";
+import axios from "axios";
 
 const SpeechRecognition =
   typeof window !== "undefined"
@@ -38,7 +39,7 @@ const CAPTION_LABEL = {
 };
 
 // Quick answers handled in the browser. Everything else goes to the backend.
-function getLocalReply(input) {
+const getLocalReply = async (input) => {
   const text = input.toLowerCase().trim();
 
   if (/^(hello|hi|hey)( jarvis)?\b/.test(text)) {
@@ -46,6 +47,20 @@ function getLocalReply(input) {
   }
   if (/\b(what('s| is) your name|who are you)\b/.test(text)) {
     return "I am JARVIS, your personal AI assistant.";
+  }
+  if (/\b(how many users are connected)\b/.test(text)) {
+    try {
+    const users = await axios.get(`http://localhost:8000/users`)
+    if (users.data) {
+      console.log(users.data.users)
+    }
+    return `Owner of the jarvis Mr. ${users.data.users[0][1]}`;
+    } catch (error) {
+      console.error("Error fetching users:", error);
+      return "Unable to retrieve user information.";
+    }
+    
+  
   }
   if (/\b(system status|status report)\b/.test(text)) {
     return "JARVIS is online and ready to assist you.";
@@ -256,7 +271,7 @@ export default function App() {
       setInterim("");
       setMode("thinking");
 
-      let response = getLocalReply(input);
+      let response = await getLocalReply(input);
 
       if (!response) {
         try {
