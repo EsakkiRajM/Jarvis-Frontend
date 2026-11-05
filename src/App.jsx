@@ -48,19 +48,31 @@ const getLocalReply = async (input) => {
   if (/\b(what('s| is) your name|who are you)\b/.test(text)) {
     return "I am JARVIS, your personal AI assistant.";
   }
-  if (/\b(how many users are connected)\b/.test(text)) {
+  if (/\b(who is the owner)\b/.test(text)) {
     try {
     const users = await axios.get(`http://localhost:8000/users`)
     if (users.data) {
       console.log(users.data.users)
     }
-    return `Owner of the jarvis Mr. ${users.data.users[0][1]}`;
+    return `Mr. ${users.data.users[0][1]} ${users.data.users[0][3]} of the Jarvis `;
     } catch (error) {
       console.error("Error fetching users:", error);
       return "Unable to retrieve user information.";
     }
     
   
+  }
+  if (/\b(who is the second owner)\b/.test(text)) {
+    try {
+    const users = await axios.get(`http://localhost:8000/users`)
+    if (users.data) {
+      console.log(users.data.users)
+    }
+    return `Mrs. ${users.data.users[3][1]} `;
+    } catch (error) {
+      console.error("Error fetching users:", error);
+      return "Unable to retrieve user information.";
+    }
   }
   if (/\b(system status|status report)\b/.test(text)) {
     return "JARVIS is online and ready to assist you.";
@@ -71,6 +83,38 @@ const getLocalReply = async (input) => {
 
   return null;
 }
+
+const sendMessage = async (message, signal) => {
+  try {
+    const response = await axios.post(
+      `http://localhost:8000/ask-ai`,
+      {
+        message: message
+      },
+      {
+        signal: signal,
+        timeout: 60000
+      }
+    );
+
+    if (!response.data.success) {
+      throw new Error(
+        response.data.reply || "AI service unavailable"
+      );
+    }
+
+    console.log("AI Provider:", response.data.provider);
+
+    return response.data.reply;
+
+  } catch (error) {
+    console.error("AI API Error:", error);
+
+    throw error;
+  }
+};
+
+
 
 export default function App() {
   const [mode, setMode] = useState("idle");
@@ -106,6 +150,8 @@ export default function App() {
       [...previous, { id, role, text }].slice(-MAX_HISTORY)
     );
   }, []);
+
+  
 
   // ---------- Microphone level -> orb animation ----------
 
