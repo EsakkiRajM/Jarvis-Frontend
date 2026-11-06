@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-//import { checkHealth, sendMessage } from "../api.js";
 import "./App.css";
 import axios from "axios";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
+// ============================================
+// SPEECH RECOGNITION
+// ============================================
 
 const SpeechRecognition =
   typeof window !== "undefined"
@@ -9,17 +14,21 @@ const SpeechRecognition =
     : undefined;
 
 const MAX_HISTORY = 50;
-const ECHO_COOLDOWN_MS = 700; // ignore mic briefly after JARVIS stops talking
+const ECHO_COOLDOWN_MS = 700;
 const HEALTH_INTERVAL_MS = 30000;
 const VOICE_THRESHOLD = 0.035;
 
-// Errors where restarting the recognizer would just loop forever.
+const API_URL = "http://localhost:8000";
+
+// ============================================
+// CONSTANTS
+// ============================================
+
 const FATAL_RECOGNITION_ERRORS = {
   "not-allowed": "Microphone permission was denied.",
   "service-not-allowed": "Speech recognition is blocked in this browser.",
   "audio-capture": "No microphone was found.",
-  network:
-    "Speech recognition needs an internet connection in this browser.",
+  network: "Speech recognition needs an internet connection in this browser.",
 };
 
 const STATUS_LABEL = {
@@ -38,122 +47,234 @@ const CAPTION_LABEL = {
   idle: "NEURAL CORE",
 };
 
-// Quick answers handled in the browser. Everything else goes to the backend.
-const getLocalReply = async (input) => {
-  const text = input.toLowerCase().trim();
+// ============================================
+// API FUNCTIONS
+// ============================================
 
-  if (/^(hello|hi|hey)( jarvis)?\b/.test(text)) {
-    return "Hello Esakki. All systems are operational.";
-  }
-  if (/\b(what('s| is) your name|who are you)\b/.test(text)) {
-    return "I am JARVIS, your personal AI assistant.";
-  }
-  if (/\b(who is the owner)\b/.test(text)) {
-    try {
-    const users = await axios.get(`http://localhost:8000/users`)
-    if (users.data) {
-      console.log(users.data.users)
-    }
-    return `Mr. ${users.data.users[0][1]} ${users.data.users[0][3]} of the Jarvis `;
-    } catch (error) {
-      console.error("Error fetching users:", error);
-      return "Unable to retrieve user information.";
-    }
-    
-  
-  }
-  if (/\b(who is the second owner)\b/.test(text)) {
-    try {
-    const users = await axios.get(`http://localhost:8000/users`)
-    if (users.data) {
-      console.log(users.data.users)
-    }
-    return `Mrs. ${users.data.users[3][1]} `;
-    } catch (error) {
-      console.error("Error fetching users:", error);
-      return "Unable to retrieve user information.";
-    }
-  }
-  if (/\b(system status|status report)\b/.test(text)) {
-    return "JARVIS is online and ready to assist you.";
-  }
-  if (/\b(what('s| is) the time|current time|what time is it)\b/.test(text)) {
-    return `The current time is ${new Date().toLocaleTimeString()}.`;
-  }
+const checkHealth = async () => {
+  try {
+    const response = await axios.get(`${API_URL}/`, {
+      timeout: 5000,
+    });
 
-  return null;
-}
+    return response.data.status === "online";
+  } catch (error) {
+    console.error("Backend health check:", error);
+    return false;
+  }
+};
 
 const sendMessage = async (message, signal) => {
   try {
     const response = await axios.post(
-      `http://localhost:8000/ask-ai`,
+      `${API_URL}/ask-ai`,
       {
-        message: message
+        message,
       },
       {
-        signal: signal,
-        timeout: 60000
-      }
+        signal,
+        timeout: 60000,
+      },
     );
 
     if (!response.data.success) {
-      throw new Error(
-        response.data.reply || "AI service unavailable"
-      );
+      throw new Error(response.data.reply || "AI service unavailable");
     }
 
     console.log("AI Provider:", response.data.provider);
 
     return response.data.reply;
-
   } catch (error) {
     console.error("AI API Error:", error);
-
     throw error;
   }
 };
 
+// ============================================
+// LOCAL COMMANDS
+// ============================================
 
+const getLocalReply = async (input) => {
+  const text = input.toLowerCase().trim();
+
+  // Greeting
+  if (/^(hello|hi|hey)( jarvis)?\b/.test(text)) {
+    return "Hello Esakki. All systems are operational.";
+  }
+
+  // Assistant identity
+  if (/\b(what('s| is) your name|who are you)\b/.test(text)) {
+    return "I am JARVIS, your personal AI assistant.";
+  }
+
+  // Owner information
+  if (/\b(who is the owner)\b/.test(text)) {
+    try {
+      const users = await axios.get(`${API_URL}/users`, {
+        timeout: 10000,
+      });
+
+      const user = users.data.users?.[0];
+
+      if (!user) {
+        return "Owner information is not available.";
+      }
+
+      return `Mr. ${user[1]} ${user[3]} of JARVIS.`;
+    } catch (error) {
+      console.error("Error fetching users:", error);
+      return "Unable to retrieve user information.";
+    }
+  }
+
+  // Second owner information
+  if (/\b(who is the second owner)\b/.test(text)) {
+    try {
+      const users = await axios.get(`${API_URL}/users`, {
+        timeout: 10000,
+      });
+
+      const user = users.data.users?.[3];
+
+      if (!user) {
+        return "Second owner information is not available.";
+      }
+
+      return `Mrs. ${user[1]}.`;
+    } catch (error) {
+      console.error("Error fetching users:", error);
+      return "Unable to retrieve user information.";
+    }
+  }
+
+  // System status
+  if (/\b(system status|status report)\b/.test(text)) {
+    return "JARVIS is online and ready to assist you.";
+  }
+
+  // Current time
+  if (/\b(what('s| is) the time|current time|what time is it)\b/.test(text)) {
+    return `The current time is ${new Date().toLocaleTimeString()}.`;
+  }
+
+  return null;
+};
+
+// ============================================
+// CLEAN MARKDOWN FOR VOICE
+// ============================================
+
+const cleanTextForSpeech = (text) => {
+  return (
+    text
+      // Remove code block markers, preserve commands
+      .replace(/```[\w-]*\n?/g, "")
+      .replace(/```/g, "")
+
+      // Remove Markdown headings
+      .replace(/^#{1,6}\s*/gm, "")
+
+      // Remove bold formatting
+      .replace(/\*\*(.*?)\*\*/g, "$1")
+      .replace(/__(.*?)__/g, "$1")
+
+      // Remove italic formatting
+      .replace(/\*(.*?)\*/g, "$1")
+      .replace(/_(.*?)_/g, "$1")
+
+      // Remove inline code markers
+      .replace(/`([^`]+)`/g, "$1")
+
+      // Remove Markdown links
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+
+      // Remove list markers
+      .replace(/^\s*[-*+]\s+/gm, "")
+      .replace(/^\s*\d+\.\s+/gm, "")
+
+      // Remove blockquotes
+      .replace(/^\s*>\s?/gm, "")
+
+      // Remove excessive whitespace
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
+};
+
+// ============================================
+// MAIN APP
+// ============================================
 
 export default function App() {
   const [mode, setMode] = useState("idle");
   const [level, setLevel] = useState(0);
   const [command, setCommand] = useState("");
   const [interim, setInterim] = useState("");
+
   const [reply, setReply] = useState("Systems online. How may I assist you?");
+
   const [history, setHistory] = useState([]);
   const [micEnabled, setMicEnabled] = useState(false);
   const [backendStatus, setBackendStatus] = useState("checking");
 
+  // ============================================
+  // REFERENCES
+  // ============================================
+
   const audioContextRef = useRef(null);
   const streamRef = useRef(null);
   const animationRef = useRef(null);
+
   const recognitionRef = useRef(null);
   const restartTimerRef = useRef(null);
+
   const utteranceRef = useRef(null);
   const voicesRef = useRef([]);
+
   const abortRef = useRef(null);
+
   const lastLevelRef = useRef(0);
   const idRef = useRef(0);
   const ignoreUntilRef = useRef(0);
 
+  const conversationLogRef = useRef(null);
+
   const listeningRef = useRef(false);
   const startingRef = useRef(false);
-  // True from the moment a command is received until JARVIS finishes speaking.
   const busyRef = useRef(false);
   const mountedRef = useRef(true);
 
+  // ============================================
+  // ADD CONVERSATION HISTORY
+  // ============================================
+
   const addHistory = useCallback((role, text) => {
     const id = ++idRef.current;
+
     setHistory((previous) =>
-      [...previous, { id, role, text }].slice(-MAX_HISTORY)
+      [...previous, { id, role, text }].slice(-MAX_HISTORY),
     );
   }, []);
 
-  
+  // ============================================
+  // AUTO SCROLL CHAT
+  // ============================================
 
-  // ---------- Microphone level -> orb animation ----------
+  useEffect(() => {
+    const container = conversationLogRef.current;
+
+    if (container) {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: "smooth",
+      });
+    }
+  }, [history, interim]);
+
+  // ============================================
+  // MICROPHONE VISUALIZER
+  // ============================================
 
   const startAudioVisualizer = useCallback(async () => {
     try {
@@ -176,11 +297,15 @@ export default function App() {
         window.AudioContext || window.webkitAudioContext;
 
       const audioContext = new AudioContextClass();
+
       audioContextRef.current = audioContext;
+
       await audioContext.resume();
 
       const analyser = audioContext.createAnalyser();
+
       analyser.fftSize = 256;
+
       audioContext.createMediaStreamSource(stream).connect(analyser);
 
       const data = new Uint8Array(analyser.frequencyBinCount);
@@ -191,6 +316,7 @@ export default function App() {
         analyser.getByteTimeDomainData(data);
 
         let sum = 0;
+
         for (const sample of data) {
           const normalized = (sample - 128) / 128;
           sum += normalized * normalized;
@@ -198,14 +324,13 @@ export default function App() {
 
         const volume = Math.min(1, Math.sqrt(sum / data.length) * 5);
 
-        // Only re-render when the level visibly changes (not 60x per second).
         const rounded = Math.round(volume * 50) / 50;
+
         if (rounded !== lastLevelRef.current) {
           lastLevelRef.current = rounded;
           setLevel(rounded);
         }
 
-        // Never overwrite "thinking" / "speaking" with listening/idle.
         if (!busyRef.current && listeningRef.current) {
           setMode(volume > VOICE_THRESHOLD ? "listening" : "idle");
         }
@@ -214,15 +339,24 @@ export default function App() {
       };
 
       animate();
+
       setMicEnabled(true);
+
       return true;
     } catch (error) {
       console.error("Microphone error:", error);
+
       setReply(error.message || "Unable to access the microphone.");
+
       setMode("error");
+
       return false;
     }
   }, []);
+
+  // ============================================
+  // STOP VISUALIZER
+  // ============================================
 
   const stopAudioVisualizer = useCallback(() => {
     if (animationRef.current) {
@@ -231,6 +365,7 @@ export default function App() {
     }
 
     streamRef.current?.getTracks().forEach((track) => track.stop());
+
     streamRef.current = null;
 
     if (audioContextRef.current) {
@@ -239,17 +374,28 @@ export default function App() {
     }
 
     lastLevelRef.current = 0;
+
     setMicEnabled(false);
     setLevel(0);
   }, []);
 
-  // ---------- Speech output ----------
+  // ============================================
+  // SPEECH FINISHED
+  // ============================================
 
   const finishSpeaking = useCallback(() => {
     busyRef.current = false;
+
     ignoreUntilRef.current = Date.now() + ECHO_COOLDOWN_MS;
-    if (mountedRef.current) setMode("idle");
+
+    if (mountedRef.current) {
+      setMode("idle");
+    }
   }, []);
+
+  // ============================================
+  // TEXT TO SPEECH
+  // ============================================
 
   const speak = useCallback(
     (text) => {
@@ -263,18 +409,20 @@ export default function App() {
       synth.cancel();
 
       const utterance = new SpeechSynthesisUtterance(text);
+
       utterance.rate = 0.95;
       utterance.pitch = 0.85;
       utterance.volume = 1;
 
       const preferredVoice = voicesRef.current.find(
         (voice) =>
-          /en/i.test(voice.lang) && /Microsoft|Google/i.test(voice.name)
+          /en/i.test(voice.lang) && /Microsoft|Google/i.test(voice.name),
       );
-      if (preferredVoice) utterance.voice = preferredVoice;
 
-      // Keep a reference: Chrome can garbage-collect utterances and never
-      // fire onend. Also lets us ignore events from a cancelled utterance.
+      if (preferredVoice) {
+        utterance.voice = preferredVoice;
+      }
+
       utteranceRef.current = utterance;
 
       utterance.onstart = () => {
@@ -285,7 +433,9 @@ export default function App() {
 
       const done = () => {
         if (utteranceRef.current !== utterance) return;
+
         utteranceRef.current = null;
+
         finishSpeaking();
       };
 
@@ -294,71 +444,29 @@ export default function App() {
 
       synth.speak(utterance);
     },
-    [finishSpeaking]
+    [finishSpeaking],
   );
 
-  // ---------- Command handling (local first, then Python backend) ----------
-
-  const processCommand = useCallback(
-    async (text) => {
-      const input = text.trim();
-      if (!input) return;
-
-      // A new command replaces any request or speech still in progress.
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
-
-      utteranceRef.current = null;
-      window.speechSynthesis?.cancel();
-      busyRef.current = true;
-
-      addHistory("you", input);
-      setInterim("");
-      setMode("thinking");
-
-      let response = await getLocalReply(input);
-
-      if (!response) {
-        try {
-          response = await sendMessage(input, controller.signal);
-          if (mountedRef.current) setBackendStatus("online");
-        } catch (error) {
-          if (controller.signal.aborted) return; // replaced or stopped
-
-          console.error("Backend error:", error);
-          if (mountedRef.current) setBackendStatus("offline");
-
-          response =
-            error.userMessage ??
-            "Something went wrong while contacting my AI core.";
-        }
-      }
-
-      if (controller.signal.aborted || !mountedRef.current) return;
-
-      setReply(response);
-      addHistory("jarvis", response);
-      speak(response);
-    },
-    [addHistory, speak]
-  );
-
-  // ---------- Start / stop listening ----------
+  // ============================================
+  // STOP LISTENING
+  // ============================================
 
   const stopListening = useCallback(
     (message, isError = false) => {
       listeningRef.current = false;
       startingRef.current = false;
+
       clearTimeout(restartTimerRef.current);
 
       const recognition = recognitionRef.current;
+
       recognitionRef.current = null;
 
       if (recognition) {
         recognition.onresult = null;
         recognition.onerror = null;
         recognition.onend = null;
+
         try {
           recognition.abort();
         } catch {
@@ -368,27 +476,118 @@ export default function App() {
 
       abortRef.current?.abort();
       abortRef.current = null;
+
       utteranceRef.current = null;
+
       window.speechSynthesis?.cancel();
+
       busyRef.current = false;
 
       stopAudioVisualizer();
+
       setInterim("");
+
       setMode(isError ? "error" : "idle");
+
       setReply(message ?? "Microphone disabled. JARVIS is standing by.");
     },
-    [stopAudioVisualizer]
+    [stopAudioVisualizer],
   );
 
+  // ============================================
+  // PROCESS USER COMMAND
+  // ============================================
+
+  const processCommand = useCallback(
+    async (text) => {
+      const input = text.trim();
+
+      if (!input) return;
+
+      // Cancel previous request
+      abortRef.current?.abort();
+
+      const controller = new AbortController();
+
+      abortRef.current = controller;
+
+      utteranceRef.current = null;
+
+      window.speechSynthesis?.cancel();
+
+      busyRef.current = true;
+
+      addHistory("you", input);
+
+      setInterim("");
+      setMode("thinking");
+
+      let response = null;
+
+      try {
+        // STEP 1: Check local commands
+
+        response = await getLocalReply(input);
+
+        if (controller.signal.aborted) return;
+
+        // STEP 2: Call Groq / Gemini backend
+
+        if (!response) {
+          response = await sendMessage(input, controller.signal);
+
+          if (mountedRef.current) {
+            setBackendStatus("online");
+          }
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+
+        console.error("Backend error:", error);
+
+        if (mountedRef.current) {
+          setBackendStatus("offline");
+        }
+
+        response =
+          error.userMessage ??
+          "Something went wrong while contacting my AI core.";
+      }
+
+      if (controller.signal.aborted || !mountedRef.current) {
+        return;
+      }
+
+      // Display response only.
+      // DO NOT automatically speak.
+
+      setReply(response);
+
+      addHistory("jarvis", response);
+
+      busyRef.current = false;
+
+      setMode("idle");
+    },
+    [addHistory],
+  );
+
+  // ============================================
+  // START VOICE RECOGNITION
+  // ============================================
+
   const startListening = useCallback(async () => {
-    if (listeningRef.current || startingRef.current) return;
+    if (listeningRef.current || startingRef.current) {
+      return;
+    }
 
     if (!SpeechRecognition) {
       setReply(
-        "Speech recognition is unavailable in this browser. " +
-          "Use Chrome or Edge, or type your command below."
+        "Speech recognition is unavailable in this browser. Use Chrome or Edge, or type your command below.",
       );
+
       setMode("error");
+
       return;
     }
 
@@ -396,16 +595,16 @@ export default function App() {
 
     try {
       const micReady = await startAudioVisualizer();
+
       if (!micReady || !mountedRef.current) return;
 
       const recognition = new SpeechRecognition();
+
       recognition.lang = "en-IN";
       recognition.continuous = true;
       recognition.interimResults = true;
 
       recognition.onresult = (event) => {
-        // Ignore anything heard while JARVIS is busy: it would be JARVIS's
-        // own voice coming out of the speakers.
         if (busyRef.current || Date.now() < ignoreUntilRef.current) {
           setInterim("");
           return;
@@ -416,6 +615,7 @@ export default function App() {
 
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i];
+
           if (result.isFinal) {
             finalText += result[0].transcript;
           } else {
@@ -431,23 +631,29 @@ export default function App() {
       };
 
       recognition.onerror = (event) => {
-        if (event.error === "no-speech" || event.error === "aborted") return;
+        if (event.error === "no-speech" || event.error === "aborted") {
+          return;
+        }
 
         console.warn("Speech recognition:", event.error);
 
         const message = FATAL_RECOGNITION_ERRORS[event.error];
-        if (message) stopListening(message, true);
+
+        if (message) {
+          stopListening(message, true);
+        }
       };
 
       recognition.onend = () => {
-        if (!listeningRef.current || !mountedRef.current) return;
+        if (!listeningRef.current || !mountedRef.current) {
+          return;
+        }
 
-        // Chrome ends the session after silence. Restart after a short delay
-        // to avoid a tight start/stop loop.
         restartTimerRef.current = setTimeout(() => {
           if (!listeningRef.current || recognitionRef.current !== recognition) {
             return;
           }
+
           try {
             recognition.start();
           } catch {
@@ -457,32 +663,46 @@ export default function App() {
       };
 
       recognitionRef.current = recognition;
+
       listeningRef.current = true;
+
       recognition.start();
 
       setMode("listening");
+
       setReply("Listening. Speak your command.");
     } catch (error) {
       console.error(error);
+
       stopListening("Unable to start speech recognition.", true);
     } finally {
       startingRef.current = false;
     }
   }, [processCommand, startAudioVisualizer, stopListening]);
 
+  // ============================================
+  // TEXT INPUT
+  // ============================================
+
   const submitText = (event) => {
     event.preventDefault();
+
     const text = command.trim();
+
     if (!text) return;
+
     setCommand("");
+
     processCommand(text);
   };
 
-  // ---------- Effects ----------
+  // ============================================
+  // LOAD AVAILABLE VOICES
+  // ============================================
 
-  // Voices load asynchronously in Chrome; wait for them.
   useEffect(() => {
     const synth = window.speechSynthesis;
+
     if (!synth) return;
 
     const loadVoices = () => {
@@ -490,20 +710,31 @@ export default function App() {
     };
 
     loadVoices();
+
     synth.addEventListener("voiceschanged", loadVoices);
-    return () => synth.removeEventListener("voiceschanged", loadVoices);
+
+    return () => {
+      synth.removeEventListener("voiceschanged", loadVoices);
+    };
   }, []);
 
-  // Check that the Python backend is reachable.
+  // ============================================
+  // BACKEND HEALTH CHECK
+  // ============================================
+
   useEffect(() => {
     let cancelled = false;
 
     const run = async () => {
       const online = await checkHealth();
-      if (!cancelled) setBackendStatus(online ? "online" : "offline");
+
+      if (!cancelled) {
+        setBackendStatus(online ? "online" : "offline");
+      }
     };
 
     run();
+
     const timer = setInterval(run, HEALTH_INTERVAL_MS);
 
     return () => {
@@ -512,41 +743,59 @@ export default function App() {
     };
   }, []);
 
-  // Release everything on unmount.
+  // ============================================
+  // CLEANUP
+  // ============================================
+
   useEffect(() => {
     mountedRef.current = true;
 
     return () => {
       mountedRef.current = false;
+
       listeningRef.current = false;
+
       clearTimeout(restartTimerRef.current);
+
       abortRef.current?.abort();
 
       const recognition = recognitionRef.current;
+
       if (recognition) {
         recognition.onresult = null;
         recognition.onerror = null;
         recognition.onend = null;
+
         try {
           recognition.abort();
         } catch {
           // Already stopped.
         }
+
         recognitionRef.current = null;
       }
 
       utteranceRef.current = null;
+
       window.speechSynthesis?.cancel();
 
-      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+
       streamRef.current?.getTracks().forEach((track) => track.stop());
+
       streamRef.current = null;
+
       audioContextRef.current?.close().catch(() => {});
+
       audioContextRef.current = null;
     };
   }, []);
 
-  // ---------- UI ----------
+  // ============================================
+  // BACKEND STATUS
+  // ============================================
 
   const backendClass =
     backendStatus === "online"
@@ -562,40 +811,58 @@ export default function App() {
         ? "● OFFLINE"
         : "○ CHECKING";
 
+  // ============================================
+  // UI
+  // ============================================
+
   return (
     <main className="jarvis-app">
+      {/* HEADER */}
+
       <header className="topbar">
         <div className="brand">
           <span className="brand-icon">J</span>
+
           <div>
             <h1>J.A.R.V.I.S.</h1>
+
             <span className="brand-subtitle">PERSONAL INTELLIGENCE SYSTEM</span>
           </div>
         </div>
 
         <div className="system-status">
           <span className={`status-dot ${mode}`} />
+
           {STATUS_LABEL[mode] ?? STATUS_LABEL.idle}
         </div>
       </header>
 
+      {/* MAIN DASHBOARD */}
+
       <section className="main-stage">
+        {/* LEFT PANEL */}
+
         <div className="side-panel left-panel">
           <div className="panel-label">VOICE INTERFACE</div>
 
           <div className="metric">
             <span>INPUT LEVEL</span>
+
             <strong>{Math.round(level * 100)}%</strong>
+
             <div className="level-track">
               <div
                 className="level-fill"
-                style={{ width: `${level * 100}%` }}
+                style={{
+                  width: `${level * 100}%`,
+                }}
               />
             </div>
           </div>
 
           <div className="metric">
             <span>MICROPHONE</span>
+
             <strong>{micEnabled ? "ACTIVE" : "STANDBY"}</strong>
           </div>
 
@@ -611,12 +878,17 @@ export default function App() {
           </div>
         </div>
 
+        {/* CENTER ORB */}
+
         <div
           className={`orb-scene mode-${mode}`}
-          style={{ "--voice-level": level }}
+          style={{
+            "--voice-level": level,
+          }}
         >
           <div className="orbit orbit-outer">
             <span className="orbit-marker marker-one" />
+
             <span className="orbit-marker marker-two" />
           </div>
 
@@ -629,7 +901,9 @@ export default function App() {
           </div>
 
           <div className="energy-ring ring-one" />
+
           <div className="energy-ring ring-two" />
+
           <div className="energy-ring ring-three" />
 
           <div className="orb-core">
@@ -653,21 +927,27 @@ export default function App() {
 
           <div className="orb-caption">
             <span className="caption-line" />
+
             <span>{CAPTION_LABEL[mode] ?? CAPTION_LABEL.idle}</span>
+
             <span className="caption-line" />
           </div>
         </div>
+
+        {/* RIGHT PANEL */}
 
         <div className="side-panel right-panel">
           <div className="panel-label">SYSTEM DIAGNOSTICS</div>
 
           <div className="diagnostic-row">
             <span>CORE</span>
+
             <span className="healthy">● ONLINE</span>
           </div>
 
           <div className="diagnostic-row">
             <span>VOICE ENGINE</span>
+
             <span className={micEnabled ? "healthy" : "muted"}>
               ● {micEnabled ? "ACTIVE" : "READY"}
             </span>
@@ -675,48 +955,98 @@ export default function App() {
 
           <div className="diagnostic-row">
             <span>AI CONNECTION</span>
+
             <span className={backendClass}>{backendLabel}</span>
           </div>
 
           <div className="response-box">
             <div className="panel-label">JARVIS RESPONSE</div>
-            <p>{reply}</p>
+
+            <p>
+              {mode === "thinking"
+                ? "Processing your request..."
+                : "Ready. Responses are displayed in the communication log."}
+            </p>
           </div>
         </div>
       </section>
 
+      {/* COMMUNICATION LOG */}
+
       <section className="conversation">
         <div className="conversation-heading">
           <span>COMMUNICATION LOG</span>
+
           <span>{history.length.toString().padStart(2, "0")} ENTRIES</span>
         </div>
 
-        <div className="conversation-log" aria-live="polite">
+        <div
+          className="conversation-log"
+          ref={conversationLogRef}
+          aria-live="polite"
+        >
           {history.length === 0 && !interim ? (
             <p className="empty-log">
               No conversations yet. Activate the microphone to begin.
             </p>
           ) : (
             <>
-              {history.slice(-4).map((entry) => (
+              {history.map((entry) => (
                 <div className={`log-entry ${entry.role}`} key={entry.id}>
-                  <span>{entry.role === "you" ? "YOU" : "JARVIS"}</span>
-                  <p>{entry.text}</p>
+                  <span className="message-role">
+                    {entry.role === "you" ? "YOU" : "JARVIS"}
+                  </span>
+
+                  <div className="message-content">
+                    <div className="chat-markdown">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {entry.text}
+                      </ReactMarkdown>
+                    </div>
+
+                    {/* SPEAKER BUTTON */}
+
+                    {entry.role === "jarvis" && (
+                      <button
+                        type="button"
+                        className="message-voice-button"
+                        title="Listen to this message"
+                        aria-label="Listen to JARVIS response"
+                        onClick={() => {
+                          const cleanText = cleanTextForSpeech(entry.text);
+
+                          busyRef.current = true;
+
+                          speak(cleanText);
+                        }}
+                      >
+                        🔊
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
 
+              {/* LIVE SPEECH INPUT */}
+
               {interim && (
                 <div className="log-entry you interim">
-                  <span>YOU</span>
-                  <p>{interim}</p>
+                  <span className="message-role">YOU</span>
+
+                  <div className="message-content">
+                    <p>{interim}</p>
+                  </div>
                 </div>
               )}
             </>
           )}
         </div>
 
+        {/* CHAT INPUT */}
+
         <form className="command-form" onSubmit={submitText}>
           <span className="input-prefix">&gt;</span>
+
           <input
             value={command}
             onChange={(event) => setCommand(event.target.value)}
@@ -724,11 +1054,18 @@ export default function App() {
             aria-label="Enter a command"
             autoComplete="off"
           />
-          <button type="submit" className="send-button">
+
+          <button
+            type="submit"
+            className="send-button"
+            disabled={!command.trim()}
+          >
             SEND ↗
           </button>
         </form>
       </section>
+
+      {/* FOOTER */}
 
       <footer className="control-bar">
         <div className="footer-status">
@@ -738,14 +1075,21 @@ export default function App() {
 
         <button
           className={`mic-button ${micEnabled ? "active" : ""}`}
-          onClick={() => (micEnabled ? stopListening() : startListening())}
+          onClick={() => {
+            if (micEnabled) {
+              stopListening();
+            } else {
+              startListening();
+            }
+          }}
           type="button"
         >
           <span>{micEnabled ? "■" : "🎙"}</span>
+
           {micEnabled ? "DISCONNECT VOICE" : "ACTIVATE VOICE"}
         </button>
 
-        <div className="footer-version">INTERFACE V1.1</div>
+        <div className="footer-version">INTERFACE V1.2</div>
       </footer>
     </main>
   );
